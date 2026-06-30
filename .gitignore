@@ -1,0 +1,11 @@
+node_modules
+dist
+coverage
+.npxray-engine
+.env
+.env.*
+!.env.example
+bun.lockb
+bun.lock
+npm-debug.log
+.DS_Store
