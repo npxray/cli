@@ -27,6 +27,8 @@ describe("local engine resolution", () => {
     delete process.env.NPXRAY_ENGINE_PATH;
     const target = engineTarget();
     const binary = process.platform === "win32" ? "npxray-engine.exe" : "npxray-engine";
+    if (optionalEngineInstalled(target, binary)) return;
+
     const enginePath = join(packageRoot, ".npxray-engine", target, binary);
     mkdirSync(join(packageRoot, ".npxray-engine", target), { recursive: true });
     writeFileSync(enginePath, `#!/bin/sh\nprintf '%s\\n' '${JSON.stringify(fakeReport("dev-fixture", "1.0.0"))}'\n`);
@@ -40,6 +42,9 @@ describe("local engine resolution", () => {
 
   it("fails clearly when no local engine is available", () => {
     delete process.env.NPXRAY_ENGINE_PATH;
+    if (optionalEngineInstalled(engineTarget(), process.platform === "win32" ? "npxray-engine.exe" : "npxray-engine")) {
+      return;
+    }
 
     expect(() => resolveEngineCommand()).toThrow(
       /Install @npxray\/engine-bin-.* as an optional dependency or set NPXRAY_ENGINE_PATH/
@@ -185,6 +190,15 @@ function engineTarget(): string {
   const os = process.platform === "win32" ? "windows" : process.platform;
   const arch = process.arch === "x64" ? "amd64" : process.arch;
   return `${os}-${arch}`;
+}
+
+function optionalEngineInstalled(target: string, binary: string): boolean {
+  try {
+    const command = resolveEngineCommand().command;
+    return command.includes(`engine-bin-${target}`) && command.endsWith(join("bin", binary));
+  } catch {
+    return false;
+  }
 }
 
 function fakeReport(name: string, version: string, score = 0): Report {
