@@ -1,6 +1,6 @@
 {
   "name": "@npxray/cli",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "description": "X-ray vision for npx: a deterministic npm package risk profiler and guarded runner.",
   "license": "Apache-2.0",
   "type": "module",
@@ -28,7 +28,8 @@
     "node": ">=20"
   },
   "publishConfig": {
-    "access": "public"
+    "access": "public",
+    "provenance": true
   },
   "bin": {
     "npxray": "dist/index.js"
@@ -52,14 +53,14 @@
     "dev": "tsx src/index.ts"
   },
   "dependencies": {
-    "@npxray/contracts": "0.4.0"
+    "@npxray/contracts": "0.4.4"
   },
   "optionalDependencies": {
-    "@npxray/engine-bin-darwin-amd64": "0.4.0",
-    "@npxray/engine-bin-darwin-arm64": "0.4.0",
-    "@npxray/engine-bin-linux-amd64": "0.4.0",
-    "@npxray/engine-bin-linux-arm64": "0.4.0",
-    "@npxray/engine-bin-windows-amd64": "0.4.0"
+    "@npxray/engine-bin-darwin-amd64": "0.4.1",
+    "@npxray/engine-bin-darwin-arm64": "0.4.1",
+    "@npxray/engine-bin-linux-amd64": "0.4.1",
+    "@npxray/engine-bin-linux-arm64": "0.4.1",
+    "@npxray/engine-bin-windows-amd64": "0.4.1"
   },
   "devDependencies": {
     "@biomejs/biome": "^2.3.8",

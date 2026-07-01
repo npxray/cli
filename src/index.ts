@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { spawn } from "node:child_process";
-import { stdin as input, stdout as output } from "node:process";
+import { env, stderr, stdin as input, stdout as output } from "node:process";
 import { createInterface } from "node:readline/promises";
 import { configureNpxAlias, formatAliasResult, parseAliasOptions } from "./alias.js";
 import { comparePackages, formatCompareResult } from "./compare.js";
@@ -255,8 +255,8 @@ async function main(argv: string[]): Promise<number> {
     const localPolicy = await loadPolicy(options.policyFile);
     const apiPolicy = await loadPolicyFromApi({
       baseUrl: resolveApiUrl(options.apiUrl),
-      workspaceId: options.workspaceId ?? process.env.NPXRAY_WORKSPACE_ID,
-      sessionToken: options.sessionToken ?? process.env.NPXRAY_SESSION_TOKEN
+      workspaceId: options.workspaceId ?? env.NPXRAY_WORKSPACE_ID,
+      sessionToken: options.sessionToken ?? env.NPXRAY_SESSION_TOKEN
     });
     const policy = localPolicy ?? apiPolicy;
     const decision = evaluatePolicy(analysis, policy);
@@ -320,19 +320,19 @@ function normalizeCreatePackage(spec: string): string {
 
 // Keep spinner output off pipes, CI, and tests.
 function startSpinner(label: string): () => void {
-  if (!process.stderr.isTTY || process.env.NO_COLOR) {
+  if (!stderr.isTTY || env.NO_COLOR) {
     return () => {};
   }
   const frames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
   let frame = 0;
-  process.stderr.write("\x1b[?25l");
+  stderr.write("\x1b[?25l");
   const timer = setInterval(() => {
     frame = (frame + 1) % frames.length;
-    process.stderr.write(`\r\x1b[36m${frames[frame]}\x1b[0m ${label}…\x1b[K`);
+    stderr.write(`\r\x1b[36m${frames[frame]}\x1b[0m ${label}…\x1b[K`);
   }, 80);
   return () => {
     clearInterval(timer);
-    process.stderr.write("\r\x1b[2K\x1b[?25h");
+    stderr.write("\r\x1b[2K\x1b[?25h");
   };
 }
 
@@ -398,7 +398,7 @@ main(process.argv.slice(2)).then(
   },
   (error: unknown) => {
     const message = error instanceof Error ? error.message : String(error);
-    process.stderr.write(`npxray: ${message}\n`);
+    stderr.write(`npxray: ${message}\n`);
     process.exitCode = 1;
   }
 );
