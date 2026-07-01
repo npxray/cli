@@ -56,11 +56,11 @@
     "@npxray/contracts": "0.4.4"
   },
   "optionalDependencies": {
-    "@npxray/engine-bin-darwin-amd64": "0.4.1",
-    "@npxray/engine-bin-darwin-arm64": "0.4.1",
-    "@npxray/engine-bin-linux-amd64": "0.4.1",
-    "@npxray/engine-bin-linux-arm64": "0.4.1",
-    "@npxray/engine-bin-windows-amd64": "0.4.1"
+    "@npxray/engine-bin-darwin-amd64": "0.4.0",
+    "@npxray/engine-bin-darwin-arm64": "0.4.0",
+    "@npxray/engine-bin-linux-amd64": "0.4.0",
+    "@npxray/engine-bin-linux-arm64": "0.4.0",
+    "@npxray/engine-bin-windows-amd64": "0.4.0"
   },
   "devDependencies": {
     "@biomejs/biome": "^2.3.8",
