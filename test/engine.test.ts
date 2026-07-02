@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { inspectWithEngine, resolveEngineCommand } from "../src/engine";
 import { evaluatePolicy, loadPolicyFromApi } from "../src/policy";
-import type { Report } from "../src/report";
+import type { Finding, FindingSeverity, Report } from "../src/report";
 
 const originalEnginePath = process.env.NPXRAY_ENGINE_PATH;
 const packageRoot = resolve(import.meta.dir, "..");
@@ -106,6 +106,65 @@ describe("local policy evaluation", () => {
       reason: "fixture-entrypoint@1.0.0 is denied by workspace policy."
     });
   });
+
+  it("blocks reports with a matching signal rule below the score budget", () => {
+    const report = fakeReport("fixture-entrypoint", "1.0.0", 12, [fakeFinding("code-shell-exec", "high")]);
+
+    expect(
+      evaluatePolicy(report, {
+        riskBudget: 100,
+        enforcement: "warn",
+        signalRules: [{ signal: "code-shell-exec", action: "block" }]
+      })
+    ).toEqual({
+      action: "block",
+      reason: "fixture-entrypoint@1.0.0 blocked: finding code-shell-exec (high) present."
+    });
+  });
+
+  it("blocks reports with a matching severity rule", () => {
+    const report = fakeReport("fixture-entrypoint", "1.0.0", 12, [
+      fakeFinding("entrypoint-sensitive-code", "critical")
+    ]);
+
+    expect(
+      evaluatePolicy(report, {
+        riskBudget: 100,
+        enforcement: "warn",
+        signalRules: [{ severity: "critical", action: "block" }]
+      })
+    ).toEqual({
+      action: "block",
+      reason: "fixture-entrypoint@1.0.0 blocked: finding entrypoint-sensitive-code (critical) present."
+    });
+  });
+
+  it("ignores findings when no signal rules are configured", () => {
+    const report = fakeReport("fixture-entrypoint", "1.0.0", 12, [
+      fakeFinding("entrypoint-sensitive-code", "critical")
+    ]);
+
+    expect(evaluatePolicy(report, { riskBudget: 100, enforcement: "block" })).toEqual({
+      action: "allow",
+      reason: "fixture-entrypoint@1.0.0 is below the workspace budget."
+    });
+  });
+
+  it("keeps explicit deny precedence over signal rules", () => {
+    const report = fakeReport("fixture-entrypoint", "1.0.0", 12, [fakeFinding("code-shell-exec", "high")]);
+
+    expect(
+      evaluatePolicy(report, {
+        riskBudget: 100,
+        enforcement: "warn",
+        deny: [{ pattern: "fixture-entrypoint" }],
+        signalRules: [{ signal: "code-shell-exec", action: "block" }]
+      })
+    ).toEqual({
+      action: "block",
+      reason: "fixture-entrypoint@1.0.0 is denied by workspace policy."
+    });
+  });
 });
 
 describe("workspace policy sync", () => {
@@ -142,7 +201,8 @@ describe("workspace policy sync", () => {
         riskBudget: 42,
         enforcement: "block",
         allow: [{ pattern: "@acme/*" }],
-        deny: [{ pattern: "fixture-entrypoint", versionRange: "< 2.0" }]
+        deny: [{ pattern: "fixture-entrypoint", versionRange: "< 2.0" }],
+        signalRules: []
       });
       expect(requests).toEqual([
         {
@@ -201,7 +261,7 @@ function optionalEngineInstalled(target: string, binary: string): boolean {
   }
 }
 
-function fakeReport(name: string, version: string, score = 0): Report {
+function fakeReport(name: string, version: string, score = 0, findings: Finding[] = []): Report {
   return {
     request: {
       raw: `${name}@${version}`,
@@ -226,7 +286,7 @@ function fakeReport(name: string, version: string, score = 0): Report {
       transitiveDependencies: 0,
       dependencyTreeTruncated: false
     },
-    findings: [],
+    findings,
     score,
     level: score >= 40 ? "watch" : "low",
     riskScore: score,
@@ -257,4 +317,16 @@ function fakeReport(name: string, version: string, score = 0): Report {
       stats: []
     }
   } as Report;
+}
+
+function fakeFinding(id: string, severity: FindingSeverity): Finding {
+  return {
+    id,
+    severity,
+    category: "capability",
+    confidence: "high",
+    title: id,
+    detail: `${id} detail`,
+    weight: 16
+  };
 }
