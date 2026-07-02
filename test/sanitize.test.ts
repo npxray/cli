@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { formatReport, sanitizeTerminal } from "../src/format";
+import { formatMarkdown, formatReport, sanitizeTerminal } from "../src/format";
 import type { Report } from "../src/report";
 
 describe("terminal output sanitization", () => {
@@ -45,6 +45,39 @@ describe("terminal output sanitization", () => {
     expect(rendered).not.toContain(`${esc}[1A`);
     expect(rendered).not.toContain(`${esc}[31m`);
     expect(rendered).toContain("Lifecycle script clears line");
+  });
+
+  it("strips ESC bytes from rendered report manifest versions", () => {
+    const ESC = String.fromCharCode(0x1b);
+    const report = fakeReport();
+    report.manifest.version = `1.0.0${ESC}[2K${ESC}[1A`;
+
+    const output = formatReport(report, { color: false, columns: 80 });
+
+    expect(output.includes(ESC)).toBe(false);
+    expect(output).toContain("escape-fixture@1.0.0[2K[1A");
+  });
+
+  it("strips ESC bytes from markdown manifest versions", () => {
+    const ESC = String.fromCharCode(0x1b);
+    const report = fakeReport();
+    report.manifest.version = `1.0.0${ESC}[2K${ESC}[1A`;
+
+    const output = formatMarkdown(report);
+
+    expect(output.includes(ESC)).toBe(false);
+    expect(output).toContain("# npxray: escape-fixture@1.0.0[2K[1A");
+  });
+
+  it("strips C1 bytes from rendered report manifest versions", () => {
+    const c1 = String.fromCharCode(0x9b);
+    const report = fakeReport();
+    report.manifest.version = `1.0.0${c1}[2K`;
+
+    const output = formatReport(report, { color: false, columns: 80 });
+
+    expect(output.includes(c1)).toBe(false);
+    expect(output).toContain("escape-fixture@1.0.0[2K");
   });
 });
 

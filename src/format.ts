@@ -125,7 +125,7 @@ function header(analysis: Report, paint: Paint, elapsedMs?: number): string[] {
   const packageName = sanitizeTerminal(analysis.request.name);
   return [
     elapsed ? `${brand}   ${elapsed}` : brand,
-    `${paint(packageName, C.bold)}${paint(`@${analysis.manifest.version}`, C.dim)}`
+    `${paint(packageName, C.bold)}${paint(`@${sanitizeTerminal(analysis.manifest.version)}`, C.dim)}`
   ];
 }
 
@@ -143,7 +143,12 @@ function verdict(analysis: Report, paint: Paint, width: number): string[] {
   const filled = Math.round((score / 100) * inner);
   const bar = paint("█".repeat(filled), level.code) + paint("░".repeat(inner - filled), C.gray);
 
-  const body = [headline, bar, "", ...wrap(analysis.recommendation, inner).map((line) => paint(line, C.dim))];
+  const body = [
+    headline,
+    bar,
+    "",
+    ...wrap(sanitizeTerminal(analysis.recommendation), inner).map((line) => paint(line, C.dim))
+  ];
   return boxed("VERDICT", body, inner, paint, level.code);
 }
 
@@ -302,11 +307,11 @@ export function formatMarkdown(analysis: Report): string {
     : "- No notable signals found.";
 
   return [
-    `# npxray: ${sanitizeTerminal(analysis.request.name)}@${analysis.manifest.version}`,
+    `# npxray: ${sanitizeTerminal(analysis.request.name)}@${sanitizeTerminal(analysis.manifest.version)}`,
     "",
     `**Risk:** ${analysis.riskLevel.toUpperCase()} (${analysis.riskScore}/100)`,
     "",
-    analysis.recommendation,
+    sanitizeTerminal(analysis.recommendation),
     "",
     "## Findings",
     findings,
