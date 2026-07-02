@@ -1,4 +1,5 @@
 import { inspectWithEngine, type EngineRunOptions } from "./engine.js";
+import { sanitizeTerminal } from "./format.js";
 import { type Finding, formatBytes, type Report, type RiskLevel } from "./report.js";
 import { resolveApiUrl } from "./scan.js";
 
@@ -96,7 +97,7 @@ export async function comparePackages(input: string[], options: CompareRunOption
 export function formatCompareResult(comparison: VersionCompareResult): string {
   const sign = comparison.scoreDelta > 0 ? "+" : "";
   const lines = [
-    `npxray compare ${comparison.packageName}`,
+    `npxray compare ${sanitizeTerminal(comparison.packageName)}`,
     `${comparison.fromVersion} (${comparison.from.level}, ${comparison.from.score}/100) -> ${comparison.toVersion} (${comparison.to.level}, ${comparison.to.score}/100)`,
     `risk ${comparison.riskDirection}; score delta ${sign}${comparison.scoreDelta}`,
     ""
@@ -126,7 +127,7 @@ export function formatCompareResult(comparison: VersionCompareResult): string {
 
 function formatSignalGroup(label: "added" | "removed", items: SignalDiffItem[]): string[] {
   if (items.length === 0) return [];
-  return items.slice(0, 8).map((item) => `  ${label}: [${item.severity}] ${item.title}`);
+  return items.slice(0, 8).map((item) => `  ${label}: [${item.severity}] ${sanitizeTerminal(item.title)}`);
 }
 
 function formatMetricValue(value: number, unit: "count" | "bytes"): string {

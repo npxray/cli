@@ -23,6 +23,14 @@ const C = {
 
 const ANSI = new RegExp(`${String.fromCharCode(27)}\\[[0-9;]*m`, "g");
 
+// Strip terminal control/escape bytes from untrusted package-derived text so a
+// scanned package cannot inject ANSI/cursor sequences into npxray's output.
+// Keeps \u0009 (TAB) and \u000A (LF); strips ESC (\u001B), CR, other C0, DEL, C1.
+export function sanitizeTerminal(value: string): string {
+  // biome-ignore lint/suspicious/noControlCharactersInRegex: intentional control-byte strip
+  return value.replace(/[\u0000-\u0008\u000B-\u001F\u007F-\u009F]/g, "");
+}
+
 function visibleLen(value: string): number {
   return [...value.replace(ANSI, "")].length;
 }
@@ -114,9 +122,10 @@ export function formatReport(analysis: Report, options: FormatOptions = {}): str
 function header(analysis: Report, paint: Paint, elapsedMs?: number): string[] {
   const elapsed = elapsedMs !== undefined ? paint(`scanned in ${(elapsedMs / 1000).toFixed(1)}s`, C.dim) : "";
   const brand = `${paint("▌", LEVELS[analysis.riskLevel].code)} ${paint("npxray", C.bold)}`;
+  const packageName = sanitizeTerminal(analysis.request.name);
   return [
     elapsed ? `${brand}   ${elapsed}` : brand,
-    `${paint(analysis.request.name, C.bold)}${paint(`@${analysis.manifest.version}`, C.dim)}`
+    `${paint(packageName, C.bold)}${paint(`@${analysis.manifest.version}`, C.dim)}`
   ];
 }
 
@@ -188,15 +197,17 @@ function signals(findings: Finding[], paint: Paint, width: number): string[] {
   for (const finding of ordered.slice(0, SIGNAL_LIMIT)) {
     const meta = SEVERITIES[finding.severity];
     const label = padEndVisible(finding.severity, 8);
-    lines.push(`${paint(meta.glyph, meta.code)} ${paint(label, meta.code)} ${paint(finding.title, C.bold)}`);
-    for (const detailLine of wrap(finding.detail, wrapWidth)) {
+    lines.push(
+      `${paint(meta.glyph, meta.code)} ${paint(label, meta.code)} ${paint(sanitizeTerminal(finding.title), C.bold)}`
+    );
+    for (const detailLine of wrap(sanitizeTerminal(finding.detail), wrapWidth)) {
       lines.push(`${" ".repeat(indent)}${paint(detailLine, C.dim)}`);
     }
     if (finding.files?.length) {
-      lines.push(`${" ".repeat(indent)}${paint(finding.files.slice(0, 3).join(", "), C.gray)}`);
+      lines.push(`${" ".repeat(indent)}${paint(sanitizeTerminal(finding.files.slice(0, 3).join(", ")), C.gray)}`);
     }
     if (finding.evidence) {
-      const evidence = finding.evidence.split("\n")[0].trim();
+      const evidence = sanitizeTerminal(finding.evidence.split("\n")[0]).trim();
       const clipped = evidence.length > wrapWidth - 2 ? `${evidence.slice(0, wrapWidth - 3)}…` : evidence;
       lines.push(`${" ".repeat(indent)}${paint(`› ${clipped}`, C.gray)}`);
     }
@@ -247,8 +258,8 @@ function footer(analysis: Report, paint: Paint, width: number): string[] {
     lines.push(...wrap(`⚑ ${flags.join(" · ")}`, width).map((line) => paint(line, code)));
     lines.push("");
   }
-  lines.push(paint(`registry  ${analysis.packageUrl}`, C.dim));
-  lines.push(paint(`tarball   ${analysis.manifest.dist?.tarball ?? "not available"}`, C.dim));
+  lines.push(paint(`registry  ${sanitizeTerminal(analysis.packageUrl)}`, C.dim));
+  lines.push(paint(`tarball   ${sanitizeTerminal(analysis.manifest.dist?.tarball ?? "not available")}`, C.dim));
   return lines;
 }
 
@@ -285,13 +296,13 @@ export function formatMarkdown(analysis: Report): string {
     ? analysis.findings
         .map(
           (finding: Finding) =>
-            `- **${finding.severity}** (${finding.category}/${finding.confidence}): ${finding.title} - ${finding.detail}`
+            `- **${finding.severity}** (${finding.category}/${finding.confidence}): ${sanitizeTerminal(finding.title)} - ${sanitizeTerminal(finding.detail)}`
         )
         .join("\n")
     : "- No notable signals found.";
 
   return [
-    `# npxray: ${analysis.request.name}@${analysis.manifest.version}`,
+    `# npxray: ${sanitizeTerminal(analysis.request.name)}@${analysis.manifest.version}`,
     "",
     `**Risk:** ${analysis.riskLevel.toUpperCase()} (${analysis.riskScore}/100)`,
     "",
