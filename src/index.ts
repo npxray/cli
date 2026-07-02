@@ -5,11 +5,12 @@ import { createInterface } from "node:readline/promises";
 import { configureNpxAlias, formatAliasResult, parseAliasOptions } from "./alias.js";
 import { comparePackages, formatCompareResult } from "./compare.js";
 import { formatMarkdown, formatReport } from "./format.js";
-import { parseCompareOptions, parseInspectOptions, parseRunOptions } from "./options.js";
+import { parseCompareOptions, parseInspectOptions, parseRunOptions, parseWatchOptions } from "./options.js";
 import { evaluatePolicy, loadPolicy, loadPolicyFromApi } from "./policy.js";
 import type { Report } from "./report.js";
 import { inspectWithScanner, resolveApiUrl } from "./scan.js";
 import { buildShareSvg } from "./share.js";
+import { runWatchCommand } from "./watch.js";
 
 const HELP = `npxray
 
@@ -18,6 +19,7 @@ Usage:
   npxray compare [options] <pkg@from> <pkg@to>
   npxray run [options] -- <npx args...>
   npxray alias [options]
+  npxray watch <list|add|remove> [options]
 
 Examples:
   npxray inspect create-vite@latest
@@ -28,9 +30,11 @@ Examples:
   npxray run -- create-vite@latest my-app --template react
   npxray run -- ./package.tgz
   npxray alias
+  npxray watch add create-vite
+  npxray watch list
   npx create-vite@latest my-app --template react
 
-Run "npxray inspect --help", "npxray compare --help", "npxray run --help", or "npxray alias --help" for command options.
+Run "npxray inspect --help", "npxray compare --help", "npxray run --help", "npxray alias --help", or "npxray watch --help" for command options.
 `;
 
 const INSPECT_HELP = `npxray inspect
@@ -125,6 +129,26 @@ Environment:
   XDG_CONFIG_HOME       fish config root override
 `;
 
+const WATCH_HELP = `npxray watch
+
+Usage:
+  npxray watch list [options]
+  npxray watch add [options] <package>
+  npxray watch remove [options] <package>
+
+Options:
+  --json                 Print the API watchlist JSON
+  --api-url <url>        Use a specific npxray API origin (default: https://api.npxray.dev)
+  --workspace <id>       Workspace id for session-based watchlist access
+  --session <token>      Session token for session-based watchlist access
+  -h, --help             Show this help
+
+Environment:
+  NPXRAY_API_URL         Default API origin override
+  NPXRAY_WORKSPACE_ID    Workspace id for watchlist access
+  NPXRAY_SESSION_TOKEN   Session token for watchlist access
+`;
+
 const npmExecFlagsWithValues = new Set([
   "--package",
   "-p",
@@ -150,6 +174,14 @@ async function main(argv: string[]): Promise<number> {
     const result = configureNpxAlias(parseAliasOptions(args));
     output.write(`${formatAliasResult(result)}\n`);
     return 0;
+  }
+
+  if (command === "watch") {
+    if (isLeadingHelpFlag(args)) {
+      output.write(WATCH_HELP);
+      return 0;
+    }
+    return runWatchCommand(parseWatchOptions(args));
   }
 
   if (command === "inspect") {
