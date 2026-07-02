@@ -1,9 +1,15 @@
 import { readFile } from "node:fs/promises";
-import type { Report } from "./report.js";
+import type { FindingSeverity, Report } from "./report.js";
 
 export interface PolicyRule {
   pattern: string;
   versionRange?: string;
+}
+
+export interface SignalRule {
+  signal?: string;
+  severity?: FindingSeverity;
+  action: "warn" | "block";
 }
 
 export interface LocalPolicy {
@@ -11,6 +17,7 @@ export interface LocalPolicy {
   enforcement: "warn" | "block";
   allow?: Array<string | PolicyRule>;
   deny?: Array<string | PolicyRule>;
+  signalRules?: SignalRule[];
 }
 
 export interface PolicyDecision {
@@ -26,7 +33,8 @@ export async function loadPolicy(path?: string): Promise<LocalPolicy | undefined
     riskBudget: policy.riskBudget ?? 50,
     enforcement: policy.enforcement ?? "warn",
     allow: normalizeRules(policy.allow),
-    deny: normalizeRules(policy.deny)
+    deny: normalizeRules(policy.deny),
+    signalRules: policy.signalRules ?? []
   };
 }
 
@@ -50,7 +58,8 @@ export async function loadPolicyFromApi(input: {
     riskBudget: policy.riskBudget ?? 50,
     enforcement: policy.enforcement ?? "warn",
     allow: normalizeRules(policy.allow),
-    deny: normalizeRules(policy.deny)
+    deny: normalizeRules(policy.deny),
+    signalRules: policy.signalRules ?? []
   };
 }
 
@@ -65,11 +74,39 @@ export function evaluatePolicy(report: Report, policy?: LocalPolicy): PolicyDeci
   if (matchesAny(spec, report.request.name, report.manifest.version, policy.allow ?? [])) {
     return { action: "allow", reason: `${spec} is allowed by workspace policy.` };
   }
+  const signalDecision = evaluateSignalRules(spec, report, policy.signalRules ?? []);
+  if (signalDecision?.action === "block") {
+    return signalDecision;
+  }
   if (report.score >= policy.riskBudget) {
     const reason = `${spec} scored ${report.score}/100, meeting the workspace budget ${policy.riskBudget}.`;
     return { action: policy.enforcement === "block" ? "block" : "warn", reason };
   }
+  if (signalDecision) {
+    return signalDecision;
+  }
   return { action: "allow", reason: `${spec} is below the workspace budget.` };
+}
+
+function evaluateSignalRules(spec: string, report: Report, signalRules: SignalRule[]): PolicyDecision | undefined {
+  let warnDecision: PolicyDecision | undefined;
+  for (const finding of report.findings) {
+    for (const rule of signalRules) {
+      if (!signalRuleMatches(rule, finding)) continue;
+      const decisionVerb = rule.action === "block" ? "blocked" : "warned";
+      const reason = `${spec} ${decisionVerb}: finding ${finding.id} (${finding.severity}) present.`;
+      const decision: PolicyDecision = { action: rule.action, reason };
+      if (decision.action === "block") return decision;
+      warnDecision ??= decision;
+    }
+  }
+  return warnDecision;
+}
+
+function signalRuleMatches(rule: SignalRule, finding: Report["findings"][number]): boolean {
+  if (rule.signal !== undefined && rule.signal !== finding.id) return false;
+  if (rule.severity !== undefined && rule.severity !== finding.severity) return false;
+  return rule.signal !== undefined || rule.severity !== undefined;
 }
 
 function normalizeRules(rules: Array<string | PolicyRule> = []): PolicyRule[] {
