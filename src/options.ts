@@ -25,6 +25,15 @@ export interface RunOptions {
   commandArgs: string[];
 }
 
+export interface WatchOptions {
+  action?: string;
+  json: boolean;
+  apiUrl?: string;
+  workspaceId?: string;
+  sessionToken?: string;
+  packageName?: string;
+}
+
 export interface CompareOptions {
   json: boolean;
   local: boolean;
@@ -102,6 +111,33 @@ export function parseRunOptions(args: string[]): RunOptions {
       options.sessionToken = requireValue(args, ++index, "--session");
     } else {
       options.commandArgs.push(arg);
+    }
+  }
+
+  return options;
+}
+
+export function parseWatchOptions(args: string[]): WatchOptions {
+  const options: WatchOptions = {
+    json: false
+  };
+
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index];
+    if (arg === "--json") {
+      options.json = true;
+    } else if (arg === "--api-url") {
+      options.apiUrl = requireValue(args, ++index, "--api-url");
+    } else if (arg === "--workspace") {
+      options.workspaceId = requireValue(args, ++index, "--workspace");
+    } else if (arg === "--session") {
+      options.sessionToken = requireValue(args, ++index, "--session");
+    } else if (!options.action) {
+      options.action = arg;
+    } else if (!options.packageName) {
+      options.packageName = arg;
+    } else {
+      throw new Error(`Unexpected watch argument: ${arg}`);
     }
   }
 

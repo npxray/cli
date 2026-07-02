@@ -16,6 +16,8 @@ npxray compare create-vite@5.0.0 create-vite@5.1.0
 npxray run -- create-vite@latest my-app --template react
 npxray run -- ./package.tgz
 npxray alias
+npxray watch add create-vite --workspace workspace-team --session "$NPXRAY_SESSION_TOKEN"
+npxray watch list --workspace workspace-team --session "$NPXRAY_SESSION_TOKEN"
 npx create-vite@latest my-app --template react
 ```
 
@@ -28,10 +30,14 @@ npxray inspect [options] <package|npx command|local .tgz|local package dir>
 npxray compare [options] <pkg@from> <pkg@to>
 npxray run [options] -- <npx args...>
 npxray alias [options]
+npxray watch list [options]
+npxray watch add [options] <package>
+npxray watch remove [options] <package>
 npxray inspect --help
 npxray compare --help
 npxray run --help
 npxray alias --help
+npxray watch --help
 ```
 
 ## Alias npx
@@ -43,6 +49,18 @@ npx create-vite@latest my-app --template react
 ```
 
 Use `npxray alias --dry-run` to preview the profile and snippet, `--print` to print the snippet only, `--shell <bash|zsh|fish>` to choose a shell explicitly, or `--profile <path>` to write a specific startup file.
+
+## Watchlists
+
+Team workspaces can manage package watchlists from the terminal with the same session-based workspace auth used for policy sync:
+
+```bash
+npxray watch add create-vite --workspace workspace-team --session "$NPXRAY_SESSION_TOKEN"
+npxray watch list --workspace workspace-team --session "$NPXRAY_SESSION_TOKEN"
+npxray watch remove create-vite --workspace workspace-team --session "$NPXRAY_SESSION_TOKEN"
+```
+
+Use `--json` to print the API watchlist payload unchanged for scripts. `NPXRAY_WORKSPACE_ID`, `NPXRAY_SESSION_TOKEN`, and `NPXRAY_API_URL` can provide the workspace, session, and API origin defaults.
 
 ## Scan Routing
 
