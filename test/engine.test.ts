@@ -3,7 +3,7 @@ import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:f
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { inspectWithEngine, resolveEngineCommand } from "../src/engine";
-import { evaluatePolicy, loadPolicyFromApi } from "../src/policy";
+import { evaluatePolicy, loadPolicy, loadPolicyFromApi } from "../src/policy";
 import type { Finding, FindingSeverity, Report } from "../src/report";
 
 const originalEnginePath = process.env.NPXRAY_ENGINE_PATH;
@@ -53,12 +53,62 @@ describe("local engine resolution", () => {
 });
 
 describe("local policy evaluation", () => {
+  it("allows packages with no matching rules below the budget", () => {
+    const report = fakeReport("left-pad", "1.3.0", 12, [fakeFinding("code-shell-exec", "high")]);
+
+    expect(evaluatePolicy(report, { riskBudget: 100, enforcement: "block" })).toEqual({
+      action: "allow",
+      reason: "left-pad@1.3.0 is below the workspace budget."
+    });
+  });
+
   it("blocks packages that meet a blocking workspace budget", () => {
     const report = fakeReport("fixture-entrypoint", "1.0.0", 43);
 
     expect(evaluatePolicy(report, { riskBudget: 40, enforcement: "block" })).toEqual({
       action: "block",
       reason: "fixture-entrypoint@1.0.0 scored 43/100, meeting the workspace budget 40."
+    });
+  });
+
+  it("warns when score meets a warn budget", () => {
+    const report = fakeReport("fixture-entrypoint", "1.0.0", 43);
+
+    expect(evaluatePolicy(report, { riskBudget: 40, enforcement: "warn" })).toEqual({
+      action: "warn",
+      reason: "fixture-entrypoint@1.0.0 scored 43/100, meeting the workspace budget 40."
+    });
+  });
+
+  it("applies deny before allow", () => {
+    const report = fakeReport("fixture-entrypoint", "1.0.0", 12);
+
+    expect(
+      evaluatePolicy(report, {
+        riskBudget: 100,
+        enforcement: "block",
+        allow: [{ pattern: "fixture-entrypoint" }],
+        deny: [{ pattern: "fixture-entrypoint" }]
+      })
+    ).toEqual({
+      action: "block",
+      reason: "fixture-entrypoint@1.0.0 is denied by workspace policy."
+    });
+  });
+
+  it("lets explicit allow bypass signal blocks and budget", () => {
+    const report = fakeReport("safe-package", "2.0.0", 90, [fakeFinding("code-shell-exec", "critical")]);
+
+    expect(
+      evaluatePolicy(report, {
+        riskBudget: 40,
+        enforcement: "block",
+        allow: [{ pattern: "safe-package" }],
+        signalRules: [{ signal: "code-shell-exec", action: "block" }]
+      })
+    ).toEqual({
+      action: "allow",
+      reason: "safe-package@2.0.0 is allowed by workspace policy."
     });
   });
 
@@ -107,7 +157,7 @@ describe("local policy evaluation", () => {
     });
   });
 
-  it("blocks reports with a matching signal rule below the score budget", () => {
+  it("blocks reports with a matching signal id below the score budget", () => {
     const report = fakeReport("fixture-entrypoint", "1.0.0", 12, [fakeFinding("code-shell-exec", "high")]);
 
     expect(
@@ -139,6 +189,90 @@ describe("local policy evaluation", () => {
     });
   });
 
+  it("requires both signal and severity when a rule is conjunctive", () => {
+    const partial = fakeReport("pkg", "1.0.0", 10, [
+      fakeFinding("code-shell-exec", "medium"),
+      fakeFinding("other-signal", "high")
+    ]);
+    const exact = fakeReport("pkg", "1.0.0", 10, [fakeFinding("code-shell-exec", "high")]);
+    const policy = {
+      riskBudget: 100,
+      enforcement: "block" as const,
+      signalRules: [{ signal: "code-shell-exec", severity: "high" as const, action: "block" as const }]
+    };
+
+    expect(evaluatePolicy(partial, policy)).toEqual({
+      action: "allow",
+      reason: "pkg@1.0.0 is below the workspace budget."
+    });
+    expect(evaluatePolicy(exact, policy)).toEqual({
+      action: "block",
+      reason: "pkg@1.0.0 blocked: finding code-shell-exec (high) present."
+    });
+  });
+
+  it("evaluates selectorless signal rules as no-ops when already loaded", () => {
+    const report = fakeReport("fixture-entrypoint", "1.0.0", 12, [
+      fakeFinding("entrypoint-sensitive-code", "critical")
+    ]);
+
+    expect(
+      evaluatePolicy(report, {
+        riskBudget: 100,
+        enforcement: "block",
+        signalRules: [{ action: "block" }]
+      })
+    ).toEqual({
+      action: "allow",
+      reason: "fixture-entrypoint@1.0.0 is below the workspace budget."
+    });
+  });
+
+  it("applies signal blocks before a warn budget", () => {
+    const report = fakeReport("risky-pkg", "1.0.0", 55, [fakeFinding("code-shell-exec", "high")]);
+
+    expect(
+      evaluatePolicy(report, {
+        riskBudget: 50,
+        enforcement: "warn",
+        signalRules: [{ signal: "code-shell-exec", action: "block" }]
+      })
+    ).toEqual({
+      action: "block",
+      reason: "risky-pkg@1.0.0 blocked: finding code-shell-exec (high) present."
+    });
+  });
+
+  it("applies a block budget before signal warnings", () => {
+    const report = fakeReport("risky-pkg", "1.0.0", 55, [fakeFinding("code-shell-exec", "high")]);
+
+    expect(
+      evaluatePolicy(report, {
+        riskBudget: 50,
+        enforcement: "block",
+        signalRules: [{ signal: "code-shell-exec", action: "warn" }]
+      })
+    ).toEqual({
+      action: "block",
+      reason: "risky-pkg@1.0.0 scored 55/100, meeting the workspace budget 50."
+    });
+  });
+
+  it("warns on matching signals below the budget", () => {
+    const report = fakeReport("fixture-entrypoint", "1.0.0", 12, [fakeFinding("code-shell-exec", "high")]);
+
+    expect(
+      evaluatePolicy(report, {
+        riskBudget: 100,
+        enforcement: "block",
+        signalRules: [{ signal: "code-shell-exec", action: "warn" }]
+      })
+    ).toEqual({
+      action: "warn",
+      reason: "fixture-entrypoint@1.0.0 warned: finding code-shell-exec (high) present."
+    });
+  });
+
   it("ignores findings when no signal rules are configured", () => {
     const report = fakeReport("fixture-entrypoint", "1.0.0", 12, [
       fakeFinding("entrypoint-sensitive-code", "critical")
@@ -165,9 +299,55 @@ describe("local policy evaluation", () => {
       reason: "fixture-entrypoint@1.0.0 is denied by workspace policy."
     });
   });
+
+  it("allows when no workspace policy is configured", () => {
+    const report = fakeReport("fixture-entrypoint", "1.0.0", 90, [fakeFinding("code-shell-exec", "critical")]);
+
+    expect(evaluatePolicy(report)).toEqual({
+      action: "allow",
+      reason: "No workspace policy configured."
+    });
+  });
 });
 
 describe("workspace policy sync", () => {
+  it("loads a local policy file and defaults signalRules", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "npxray-local-policy-"));
+    const policyPath = join(dir, "policy.json");
+    writeFileSync(
+      policyPath,
+      JSON.stringify({
+        riskBudget: 35,
+        enforcement: "block",
+        allow: ["@acme/*"],
+        deny: ["left-pad"],
+        signalRules: [{ signal: "code-shell-exec", action: "warn" }]
+      })
+    );
+
+    await expect(loadPolicy(policyPath)).resolves.toEqual({
+      riskBudget: 35,
+      enforcement: "block",
+      allow: [{ pattern: "@acme/*" }],
+      deny: [{ pattern: "left-pad" }],
+      signalRules: [{ signal: "code-shell-exec", action: "warn" }]
+    });
+  });
+
+  it("defaults omitted signalRules to an empty array for local files", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "npxray-local-policy-empty-"));
+    const policyPath = join(dir, "policy.json");
+    writeFileSync(policyPath, JSON.stringify({ riskBudget: 50, enforcement: "warn" }));
+
+    await expect(loadPolicy(policyPath)).resolves.toEqual({
+      riskBudget: 50,
+      enforcement: "warn",
+      allow: [],
+      deny: [],
+      signalRules: []
+    });
+  });
+
   it("loads a policy from the API with the session cookie", async () => {
     const originalFetch = globalThis.fetch;
     const requests: Array<{ url: string; cookie?: string }> = [];
@@ -184,7 +364,8 @@ describe("workspace policy sync", () => {
           riskBudget: 42,
           enforcement: "block",
           allow: ["@acme/*"],
-          deny: [{ pattern: "fixture-entrypoint", versionRange: "< 2.0" }]
+          deny: [{ pattern: "fixture-entrypoint", versionRange: "< 2.0" }],
+          signalRules: [{ severity: "critical", action: "block" }]
         }),
         { headers: { "content-type": "application/json" } }
       );
@@ -202,7 +383,7 @@ describe("workspace policy sync", () => {
         enforcement: "block",
         allow: [{ pattern: "@acme/*" }],
         deny: [{ pattern: "fixture-entrypoint", versionRange: "< 2.0" }],
-        signalRules: []
+        signalRules: [{ severity: "critical", action: "block" }]
       });
       expect(requests).toEqual([
         {
@@ -210,6 +391,38 @@ describe("workspace policy sync", () => {
           cookie: "npxray_session=session-token"
         }
       ]);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it("defaults omitted API signalRules to an empty array", async () => {
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = (async () =>
+      new Response(
+        JSON.stringify({
+          riskBudget: 42,
+          enforcement: "block",
+          allow: ["@acme/*"],
+          deny: [{ pattern: "fixture-entrypoint", versionRange: "< 2.0" }]
+        }),
+        { headers: { "content-type": "application/json" } }
+      )) as typeof fetch;
+
+    try {
+      await expect(
+        loadPolicyFromApi({
+          baseUrl: "https://api.test/",
+          workspaceId: "workspace-team",
+          sessionToken: "session-token"
+        })
+      ).resolves.toEqual({
+        riskBudget: 42,
+        enforcement: "block",
+        allow: [{ pattern: "@acme/*" }],
+        deny: [{ pattern: "fixture-entrypoint", versionRange: "< 2.0" }],
+        signalRules: []
+      });
     } finally {
       globalThis.fetch = originalFetch;
     }
@@ -232,6 +445,75 @@ describe("workspace policy sync", () => {
           sessionToken: "expired-session"
         })
       ).rejects.toThrow("Workspace policy sync failed: 401");
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it("rejects local policies with invalid enforcement", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "npxray-local-policy-enforcement-"));
+    const policyPath = join(dir, "policy.json");
+    writeFileSync(
+      policyPath,
+      JSON.stringify({
+        riskBudget: 50,
+        enforcement: "halt"
+      })
+    );
+
+    await expect(loadPolicy(policyPath)).rejects.toThrow(/Invalid policy file .*enforcement/);
+  });
+
+  it("rejects local policies with selectorless signal rules", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "npxray-local-policy-selectorless-"));
+    const policyPath = join(dir, "policy.json");
+    writeFileSync(
+      policyPath,
+      JSON.stringify({
+        riskBudget: 50,
+        enforcement: "block",
+        signalRules: [{ action: "block" }]
+      })
+    );
+
+    await expect(loadPolicy(policyPath)).rejects.toThrow(/Invalid policy file .*signalRules\[0\]/);
+  });
+
+  it("rejects local policies with invalid signal rule actions", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "npxray-local-policy-signal-action-"));
+    const policyPath = join(dir, "policy.json");
+    writeFileSync(
+      policyPath,
+      JSON.stringify({
+        riskBudget: 50,
+        enforcement: "block",
+        signalRules: [{ signal: "code-shell-exec", action: "halt" }]
+      })
+    );
+
+    await expect(loadPolicy(policyPath)).rejects.toThrow(/Invalid policy file .*signalRules\[0\]\.action/);
+  });
+
+  it("rejects malformed API policy payloads", async () => {
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = (async () =>
+      new Response(
+        JSON.stringify({
+          riskBudget: 50,
+          enforcement: "halt",
+          signalRules: [{ action: "block" }]
+        }),
+        { headers: { "content-type": "application/json" } }
+      )) as typeof fetch;
+
+    try {
+      await expect(
+        loadPolicyFromApi({
+          baseUrl: "https://api.test/",
+          workspaceId: "workspace-team",
+          sessionToken: "session-token"
+        })
+      ).rejects.toThrow(/Workspace policy sync failed: invalid policy: enforcement/);
     } finally {
       globalThis.fetch = originalFetch;
     }

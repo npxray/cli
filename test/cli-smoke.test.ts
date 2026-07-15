@@ -40,7 +40,12 @@ describe("CLI command smoke", () => {
     expect(inspect.stdout).toContain("npxray inspect");
     expect(inspect.stdout).toContain("--api-url <url>");
     expect(inspect.stdout).toContain("--local");
+    expect(inspect.stdout).toContain("--policy-file <path>");
+    expect(inspect.stdout).toContain("--workspace <id>");
+    expect(inspect.stdout).toContain("--session <token>");
     expect(inspect.stdout).toContain("NPXRAY_API_TOKEN");
+    expect(inspect.stdout).toContain("NPXRAY_WORKSPACE_ID");
+    expect(inspect.stdout).toContain("NPXRAY_SESSION_TOKEN");
 
     const compare = runCli(["compare", "--help"]);
     expect(compare.status).toBe(0);
@@ -53,6 +58,7 @@ describe("CLI command smoke", () => {
     expect(run.stdout).toContain("npxray run");
     expect(run.stdout).toContain("--api-url <url>");
     expect(run.stdout).toContain("--local");
+    expect(run.stdout).toContain("--policy-file <path>");
     expect(run.stdout).toContain("NPXRAY_LOCAL=1");
 
     const alias = runCli(["alias", "--help"]);
@@ -335,6 +341,245 @@ describe("CLI command smoke", () => {
     });
     expect(blocked.status).toBe(3);
     expect(blocked.stdout).toContain("Blocked by policy");
+    expect(blocked.stdout).toContain("fixture-entrypoint@1.0.0 scored 43/100, meeting the workspace budget 40.");
+  });
+
+  it("exits 3 when inspect hits a local signal-keyed block", () => {
+    const enginePath = makeFakeEngine(
+      fakeReport("fixture-entrypoint", "1.0.0", 12, [
+        {
+          id: "code-shell-exec",
+          severity: "high",
+          category: "capability",
+          confidence: "high",
+          title: "Shell execution",
+          detail: "Package executes a shell.",
+          files: [],
+          weight: 16
+        }
+      ])
+    );
+    const dir = mkdtempSync(join(tmpdir(), "npxray-inspect-signal-block-"));
+    const policyPath = join(dir, "policy.json");
+    writeFileSync(
+      policyPath,
+      JSON.stringify({
+        riskBudget: 100,
+        enforcement: "warn",
+        signalRules: [{ signal: "code-shell-exec", action: "block" }]
+      })
+    );
+
+    const blocked = runCli(["inspect", "--local", "--policy-file", policyPath, "fixture-entrypoint@latest"], {
+      NPXRAY_ENGINE_PATH: enginePath
+    });
+
+    expect(blocked.status).toBe(3);
+    expect(blocked.stdout).toContain("Blocked by policy:");
+    expect(blocked.stdout).toContain("fixture-entrypoint@1.0.0 blocked: finding code-shell-exec (high) present.");
+  });
+
+  it("returns 0 with warning output when inspect policy only warns", () => {
+    const enginePath = makeFakeEngine(
+      fakeReport("fixture-entrypoint", "1.0.0", 12, [
+        {
+          id: "code-shell-exec",
+          severity: "high",
+          category: "capability",
+          confidence: "high",
+          title: "Shell execution",
+          detail: "Package executes a shell.",
+          files: [],
+          weight: 16
+        }
+      ])
+    );
+    const dir = mkdtempSync(join(tmpdir(), "npxray-inspect-signal-warn-"));
+    const policyPath = join(dir, "policy.json");
+    writeFileSync(
+      policyPath,
+      JSON.stringify({
+        riskBudget: 100,
+        enforcement: "block",
+        signalRules: [{ signal: "code-shell-exec", action: "warn" }]
+      })
+    );
+
+    const warned = runCli(["inspect", "--local", "--policy-file", policyPath, "fixture-entrypoint@latest"], {
+      NPXRAY_ENGINE_PATH: enginePath
+    });
+
+    expect(warned.status).toBe(0);
+    expect(warned.stdout).toContain("Policy warning:");
+    expect(warned.stdout).toContain("fixture-entrypoint@1.0.0 warned: finding code-shell-exec (high) present.");
+  });
+
+  it("honors synced workspace signal rules on inspect", async () => {
+    const server = await startPolicyServer({
+      body: {
+        riskBudget: 100,
+        enforcement: "warn",
+        allow: [],
+        deny: [],
+        signalRules: [{ signal: "code-shell-exec", action: "block" }]
+      }
+    });
+    const enginePath = makeFakeEngine(
+      fakeReport("fixture-entrypoint", "1.0.0", 12, [
+        {
+          id: "code-shell-exec",
+          severity: "high",
+          category: "capability",
+          confidence: "high",
+          title: "Shell execution",
+          detail: "Package executes a shell.",
+          files: [],
+          weight: 16
+        }
+      ])
+    );
+    try {
+      const blocked = await runCliAsync(
+        [
+          "inspect",
+          "--local",
+          "--api-url",
+          server.url,
+          "--workspace",
+          "workspace-team",
+          "--session",
+          "session-token",
+          "fixture-entrypoint@latest"
+        ],
+        { NPXRAY_ENGINE_PATH: enginePath }
+      );
+
+      expect(blocked.status).toBe(3);
+      expect(blocked.stdout).toContain("Blocked by policy:");
+      expect(blocked.stdout).toContain("fixture-entrypoint@1.0.0 blocked: finding code-shell-exec (high) present.");
+      expect(server.cookies).toContain("npxray_session=session-token");
+    } finally {
+      await closeServer(server.server);
+    }
+  });
+
+  it("fails closed when inspect workspace policy sync fails", async () => {
+    const server = await startPolicyServer({ status: 401 });
+    const enginePath = makeFakeEngine(fakeReport("fixture-entrypoint", "1.0.0", 12));
+    try {
+      const result = await runCliAsync(
+        [
+          "inspect",
+          "--local",
+          "--api-url",
+          server.url,
+          "--workspace",
+          "workspace-team",
+          "--session",
+          "expired-session",
+          "fixture-entrypoint@latest"
+        ],
+        { NPXRAY_ENGINE_PATH: enginePath }
+      );
+
+      expect(result.status).toBe(1);
+      expect(result.stderr).toContain("Workspace policy sync failed: 401");
+      expect(server.cookies).toContain("npxray_session=expired-session");
+    } finally {
+      await closeServer(server.server);
+    }
+  });
+
+  it("evaluates policy during run dry-run and never starts npm exec when blocked", () => {
+    const dir = mkdtempSync(join(tmpdir(), "npxray-dry-run-policy-"));
+    const logPath = join(dir, "npm-args.txt");
+    const npmPath = join(dir, "npm");
+    const policyPath = join(dir, "policy.json");
+    writeFileSync(npmPath, '#!/bin/sh\nprintf \'%s\\n\' "$@" > "$NPXRAY_FAKE_NPM_LOG"\nexit 7\n');
+    chmodSync(npmPath, 0o755);
+    writeFileSync(
+      policyPath,
+      JSON.stringify({
+        riskBudget: 100,
+        enforcement: "warn",
+        signalRules: [{ signal: "code-shell-exec", action: "block" }]
+      })
+    );
+    const enginePath = makeFakeEngine(
+      fakeReport("fixture-entrypoint", "1.0.0", 12, [
+        {
+          id: "code-shell-exec",
+          severity: "high",
+          category: "capability",
+          confidence: "high",
+          title: "Shell execution",
+          detail: "Package executes a shell.",
+          files: [],
+          weight: 16
+        }
+      ])
+    );
+
+    const blocked = runCli(
+      ["run", "--dry-run", "--policy-file", policyPath, "--local", "--", "fixture-entrypoint@latest"],
+      {
+        NPXRAY_FAKE_NPM_LOG: logPath,
+        NPXRAY_ENGINE_PATH: enginePath,
+        PATH: `${dir}:${process.env.PATH ?? ""}`
+      }
+    );
+
+    expect(blocked.status).toBe(3);
+    expect(blocked.stdout).toContain("Blocked by policy:");
+    expect(blocked.stdout).toContain("fixture-entrypoint@1.0.0 blocked: finding code-shell-exec (high) present.");
+    expect(blocked.stdout).not.toContain("Dry run: npm exec was not started.");
+    expect(existsSync(logPath)).toBe(false);
+  });
+
+  it("prints policy warnings on allowed dry-run without starting npm exec", () => {
+    const dir = mkdtempSync(join(tmpdir(), "npxray-dry-run-warn-"));
+    const logPath = join(dir, "npm-args.txt");
+    const npmPath = join(dir, "npm");
+    const policyPath = join(dir, "policy.json");
+    writeFileSync(npmPath, '#!/bin/sh\nprintf \'%s\\n\' "$@" > "$NPXRAY_FAKE_NPM_LOG"\nexit 7\n');
+    chmodSync(npmPath, 0o755);
+    writeFileSync(
+      policyPath,
+      JSON.stringify({
+        riskBudget: 100,
+        enforcement: "block",
+        signalRules: [{ signal: "code-shell-exec", action: "warn" }]
+      })
+    );
+    const enginePath = makeFakeEngine(
+      fakeReport("fixture-entrypoint", "1.0.0", 12, [
+        {
+          id: "code-shell-exec",
+          severity: "high",
+          category: "capability",
+          confidence: "high",
+          title: "Shell execution",
+          detail: "Package executes a shell.",
+          files: [],
+          weight: 16
+        }
+      ])
+    );
+
+    const warned = runCli(
+      ["run", "--dry-run", "--policy-file", policyPath, "--local", "--", "fixture-entrypoint@latest"],
+      {
+        NPXRAY_FAKE_NPM_LOG: logPath,
+        NPXRAY_ENGINE_PATH: enginePath,
+        PATH: `${dir}:${process.env.PATH ?? ""}`
+      }
+    );
+
+    expect(warned.status).toBe(0);
+    expect(warned.stdout).toContain("Policy warning:");
+    expect(warned.stdout).toContain("fixture-entrypoint@1.0.0 warned: finding code-shell-exec (high) present.");
+    expect(warned.stdout).toContain("Dry run: npm exec was not started.");
+    expect(existsSync(logPath)).toBe(false);
   });
 
   it("blocks guarded runs with a synced workspace API policy", async () => {
@@ -414,6 +659,134 @@ describe("CLI command smoke", () => {
     }
   });
 
+  it("fails closed on inspect when local policy has invalid enforcement", () => {
+    const enginePath = makeFakeEngine(fakeReport("fixture-entrypoint", "1.0.0", 12));
+    const dir = mkdtempSync(join(tmpdir(), "npxray-inspect-bad-enforcement-"));
+    const policyPath = join(dir, "policy.json");
+    writeFileSync(
+      policyPath,
+      JSON.stringify({
+        riskBudget: 50,
+        enforcement: "halt"
+      })
+    );
+
+    const result = runCli(["inspect", "--local", "--policy-file", policyPath, "fixture-entrypoint@latest"], {
+      NPXRAY_ENGINE_PATH: enginePath
+    });
+
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain(`Invalid policy file ${policyPath}`);
+    expect(result.stderr).toContain("enforcement");
+    expect(result.stdout).not.toContain("Blocked by policy:");
+    expect(result.stdout).not.toContain("Policy warning:");
+  });
+
+  it("fails closed on inspect when local policy has selectorless signal rules", () => {
+    const enginePath = makeFakeEngine(fakeReport("fixture-entrypoint", "1.0.0", 12));
+    const dir = mkdtempSync(join(tmpdir(), "npxray-inspect-selectorless-"));
+    const policyPath = join(dir, "policy.json");
+    writeFileSync(
+      policyPath,
+      JSON.stringify({
+        riskBudget: 50,
+        enforcement: "block",
+        signalRules: [{ action: "block" }]
+      })
+    );
+
+    const result = runCli(["inspect", "--local", "--policy-file", policyPath, "fixture-entrypoint@latest"], {
+      NPXRAY_ENGINE_PATH: enginePath
+    });
+
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain(`Invalid policy file ${policyPath}`);
+    expect(result.stderr).toContain("signalRules[0]");
+  });
+
+  it("fails closed on run dry-run when local policy has invalid signal rules and never starts npm exec", () => {
+    const dir = mkdtempSync(join(tmpdir(), "npxray-run-bad-signal-"));
+    const logPath = join(dir, "npm-args.txt");
+    const npmPath = join(dir, "npm");
+    const policyPath = join(dir, "policy.json");
+    writeFileSync(npmPath, '#!/bin/sh\nprintf \'%s\\n\' "$@" > "$NPXRAY_FAKE_NPM_LOG"\nexit 7\n');
+    chmodSync(npmPath, 0o755);
+    writeFileSync(
+      policyPath,
+      JSON.stringify({
+        riskBudget: 50,
+        enforcement: "block",
+        signalRules: [{ signal: "code-shell-exec", action: "halt" }]
+      })
+    );
+    const enginePath = makeFakeEngine(fakeReport("fixture-entrypoint", "1.0.0", 12));
+
+    const result = runCli(
+      ["run", "--dry-run", "--policy-file", policyPath, "--local", "--", "fixture-entrypoint@latest"],
+      {
+        NPXRAY_FAKE_NPM_LOG: logPath,
+        NPXRAY_ENGINE_PATH: enginePath,
+        PATH: `${dir}:${process.env.PATH ?? ""}`
+      }
+    );
+
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain(`Invalid policy file ${policyPath}`);
+    expect(result.stderr).toContain("signalRules[0].action");
+    expect(result.stdout).not.toContain("Dry run: npm exec was not started.");
+    expect(existsSync(logPath)).toBe(false);
+  });
+
+  it("fails closed on run when local policy has invalid enforcement and never starts npm exec", () => {
+    const dir = mkdtempSync(join(tmpdir(), "npxray-run-bad-enforcement-"));
+    const logPath = join(dir, "npm-args.txt");
+    const npmPath = join(dir, "npm");
+    const policyPath = join(dir, "policy.json");
+    writeFileSync(npmPath, '#!/bin/sh\nprintf \'%s\\n\' "$@" > "$NPXRAY_FAKE_NPM_LOG"\nexit 7\n');
+    chmodSync(npmPath, 0o755);
+    writeFileSync(
+      policyPath,
+      JSON.stringify({
+        riskBudget: 40,
+        enforcement: "halt"
+      })
+    );
+    const enginePath = makeFakeEngine(fakeReport("fixture-entrypoint", "1.0.0", 43));
+
+    const result = runCli(["run", "--yes", "--policy-file", policyPath, "--local", "--", "fixture-entrypoint@latest"], {
+      NPXRAY_FAKE_NPM_LOG: logPath,
+      NPXRAY_ENGINE_PATH: enginePath,
+      PATH: `${dir}:${process.env.PATH ?? ""}`
+    });
+
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain(`Invalid policy file ${policyPath}`);
+    expect(result.stderr).toContain("enforcement");
+    expect(result.stdout).not.toContain("Blocked by policy");
+    expect(existsSync(logPath)).toBe(false);
+  });
+
+  it("preserves no-policy allow behavior for run dry-run", () => {
+    const dir = mkdtempSync(join(tmpdir(), "npxray-run-no-policy-"));
+    const logPath = join(dir, "npm-args.txt");
+    const npmPath = join(dir, "npm");
+    writeFileSync(npmPath, '#!/bin/sh\nprintf \'%s\\n\' "$@" > "$NPXRAY_FAKE_NPM_LOG"\nexit 7\n');
+    chmodSync(npmPath, 0o755);
+    const enginePath = makeFakeEngine(fakeReport("fixture-entrypoint", "1.0.0", 43));
+
+    const result = runCli(["run", "--dry-run", "--local", "--", "fixture-entrypoint@latest"], {
+      NPXRAY_FAKE_NPM_LOG: logPath,
+      NPXRAY_ENGINE_PATH: enginePath,
+      PATH: `${dir}:${process.env.PATH ?? ""}`
+    });
+
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain("Dry run: npm exec was not started.");
+    expect(result.stdout).not.toContain("Blocked by policy");
+    expect(result.stdout).not.toContain("Policy warning:");
+    expect(existsSync(logPath)).toBe(false);
+  });
+
   it("delegates approved runs to npm exec with normalized arguments", () => {
     const dir = mkdtempSync(join(tmpdir(), "npxray-fake-npm-"));
     const logPath = join(dir, "npm-args.txt");
@@ -456,10 +829,18 @@ describe("CLI command smoke", () => {
 });
 
 async function startPolicyServer(
-  options: { status?: number } = {}
+  options: { status?: number; body?: unknown } = {}
 ): Promise<{ server: Server; url: string; cookies: string[] }> {
   const cookies: string[] = [];
   const status = options.status ?? 200;
+  const body =
+    options.body ??
+    ({
+      riskBudget: 50,
+      enforcement: "block",
+      allow: [],
+      deny: [{ pattern: "fixture-entrypoint", versionRange: "< 2.0" }]
+    } as const);
   const server = createServer((request, response) => {
     cookies.push(request.headers.cookie ?? "");
     response.setHeader("connection", "close");
@@ -471,14 +852,7 @@ async function startPolicyServer(
         return;
       }
       response.writeHead(200, { "content-type": "application/json" });
-      response.end(
-        JSON.stringify({
-          riskBudget: 50,
-          enforcement: "block",
-          allow: [],
-          deny: [{ pattern: "fixture-entrypoint", versionRange: "< 2.0" }]
-        })
-      );
+      response.end(JSON.stringify(body));
       return;
     }
     response.writeHead(404, { "content-type": "application/json" });
@@ -544,7 +918,21 @@ function makeFakeEngine(report: unknown): string {
   return path;
 }
 
-function fakeReport(name: string, version: string, score = 0) {
+function fakeReport(
+  name: string,
+  version: string,
+  score = 0,
+  findings?: Array<{
+    id: string;
+    severity: string;
+    category: string;
+    confidence: string;
+    title: string;
+    detail: string;
+    files: string[];
+    weight: number;
+  }>
+) {
   const level = score >= 50 ? "high" : score >= 40 ? "watch" : "low";
   return {
     request: {
@@ -571,7 +959,8 @@ function fakeReport(name: string, version: string, score = 0) {
       dependencyTreeTruncated: false
     },
     findings:
-      score > 0
+      findings ??
+      (score > 0
         ? [
             {
               id: "fake-signal",
@@ -584,7 +973,7 @@ function fakeReport(name: string, version: string, score = 0) {
               weight: score
             }
           ]
-        : [],
+        : []),
     score,
     level,
     riskScore: score,

@@ -1,0 +1,11 @@
+{
+  "riskBudget": 50,
+  "enforcement": "block",
+  "allow": [],
+  "deny": [],
+  "signalRules": [
+    { "signal": "new-lifecycle-script", "action": "block" },
+    { "signal": "new-sensitive-entrypoint", "action": "block" },
+    { "signal": "new-install-capable-dependency", "action": "warn" }
+  ]
+}

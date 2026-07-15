@@ -1,48 +1,52 @@
 import { readFile } from "node:fs/promises";
-import type { FindingSeverity, Report } from "./report.js";
+import {
+  evaluateWorkspacePolicy,
+  parseWorkspacePolicy,
+  WorkspacePolicyValidationError,
+  type PolicyDecision,
+  type PolicyRule,
+  type SignalRule,
+  type WorkspacePolicy
+} from "@npxray/contracts";
+import type { Report } from "./report.js";
 
-export interface PolicyRule {
-  pattern: string;
-  versionRange?: string;
-}
+/** Loaded workspace policy; alias kept for existing CLI call sites and tests. */
+export type LocalPolicy = WorkspacePolicy;
 
-export interface SignalRule {
-  signal?: string;
-  severity?: FindingSeverity;
-  action: "warn" | "block";
-}
+export type { PolicyDecision, PolicyRule, SignalRule, WorkspacePolicy };
 
-export interface LocalPolicy {
-  riskBudget: number;
-  enforcement: "warn" | "block";
-  allow?: Array<string | PolicyRule>;
-  deny?: Array<string | PolicyRule>;
-  signalRules?: SignalRule[];
-}
-
-export interface PolicyDecision {
-  action: "allow" | "warn" | "block";
-  reason: string;
-}
-
-export async function loadPolicy(path?: string): Promise<LocalPolicy | undefined> {
+export async function loadPolicy(path?: string): Promise<WorkspacePolicy | undefined> {
   if (!path) return undefined;
-  const data = await readFile(path, "utf8");
-  const policy = JSON.parse(data) as LocalPolicy;
-  return {
-    riskBudget: policy.riskBudget ?? 50,
-    enforcement: policy.enforcement ?? "warn",
-    allow: normalizeRules(policy.allow),
-    deny: normalizeRules(policy.deny),
-    signalRules: policy.signalRules ?? []
-  };
+
+  let data: string;
+  try {
+    data = await readFile(path, "utf8");
+  } catch (error) {
+    throw new Error(`Failed to read policy file ${path}: ${error instanceof Error ? error.message : String(error)}`);
+  }
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(data);
+  } catch (error) {
+    throw new Error(`Invalid policy file ${path}: ${error instanceof Error ? error.message : String(error)}`);
+  }
+
+  try {
+    return parseWorkspacePolicy(parsed);
+  } catch (error) {
+    if (error instanceof WorkspacePolicyValidationError) {
+      throw new Error(`Invalid policy file ${path}: ${error.message}`);
+    }
+    throw error;
+  }
 }
 
 export async function loadPolicyFromApi(input: {
   baseUrl?: string;
   workspaceId?: string;
   sessionToken?: string;
-}): Promise<LocalPolicy | undefined> {
+}): Promise<WorkspacePolicy | undefined> {
   if (!input.baseUrl || !input.workspaceId || !input.sessionToken) return undefined;
   const url = `${input.baseUrl.replace(/\/+$/, "")}/v1/workspaces/${input.workspaceId}/policy`;
   const response = await fetch(url, {
@@ -53,122 +57,49 @@ export async function loadPolicyFromApi(input: {
   if (!response.ok) {
     throw new Error(`Workspace policy sync failed: ${response.status} ${response.statusText || "response"}`);
   }
-  const policy = (await response.json()) as LocalPolicy;
-  return {
-    riskBudget: policy.riskBudget ?? 50,
-    enforcement: policy.enforcement ?? "warn",
-    allow: normalizeRules(policy.allow),
-    deny: normalizeRules(policy.deny),
-    signalRules: policy.signalRules ?? []
-  };
+
+  let payload: unknown;
+  try {
+    payload = await response.json();
+  } catch (error) {
+    throw new Error(
+      `Workspace policy sync failed: invalid JSON (${error instanceof Error ? error.message : String(error)})`
+    );
+  }
+
+  try {
+    return parseWorkspacePolicy(payload);
+  } catch (error) {
+    if (error instanceof WorkspacePolicyValidationError) {
+      throw new Error(`Workspace policy sync failed: invalid policy: ${error.message}`);
+    }
+    throw error;
+  }
 }
 
-export function evaluatePolicy(report: Report, policy?: LocalPolicy): PolicyDecision {
+/** Prefer a local policy file; otherwise sync from the workspace API when credentials are present. */
+export async function resolvePolicy(input: {
+  policyFile?: string;
+  baseUrl?: string;
+  workspaceId?: string;
+  sessionToken?: string;
+}): Promise<WorkspacePolicy | undefined> {
+  const localPolicy = await loadPolicy(input.policyFile);
+  if (localPolicy) return localPolicy;
+  return loadPolicyFromApi(input);
+}
+
+export function evaluatePolicy(report: Report, policy?: WorkspacePolicy): PolicyDecision {
   if (!policy) {
     return { action: "allow", reason: "No workspace policy configured." };
   }
-  const spec = `${report.request.name}@${report.manifest.version}`;
-  if (matchesAny(spec, report.request.name, report.manifest.version, policy.deny ?? [])) {
-    return { action: "block", reason: `${spec} is denied by workspace policy.` };
-  }
-  if (matchesAny(spec, report.request.name, report.manifest.version, policy.allow ?? [])) {
-    return { action: "allow", reason: `${spec} is allowed by workspace policy.` };
-  }
-  const signalDecision = evaluateSignalRules(spec, report, policy.signalRules ?? []);
-  if (signalDecision?.action === "block") {
-    return signalDecision;
-  }
-  if (report.score >= policy.riskBudget) {
-    const reason = `${spec} scored ${report.score}/100, meeting the workspace budget ${policy.riskBudget}.`;
-    return { action: policy.enforcement === "block" ? "block" : "warn", reason };
-  }
-  if (signalDecision) {
-    return signalDecision;
-  }
-  return { action: "allow", reason: `${spec} is below the workspace budget.` };
-}
-
-function evaluateSignalRules(spec: string, report: Report, signalRules: SignalRule[]): PolicyDecision | undefined {
-  let warnDecision: PolicyDecision | undefined;
-  for (const finding of report.findings) {
-    for (const rule of signalRules) {
-      if (!signalRuleMatches(rule, finding)) continue;
-      const decisionVerb = rule.action === "block" ? "blocked" : "warned";
-      const reason = `${spec} ${decisionVerb}: finding ${finding.id} (${finding.severity}) present.`;
-      const decision: PolicyDecision = { action: rule.action, reason };
-      if (decision.action === "block") return decision;
-      warnDecision ??= decision;
-    }
-  }
-  return warnDecision;
-}
-
-function signalRuleMatches(rule: SignalRule, finding: Report["findings"][number]): boolean {
-  if (rule.signal !== undefined && rule.signal !== finding.id) return false;
-  if (rule.severity !== undefined && rule.severity !== finding.severity) return false;
-  return rule.signal !== undefined || rule.severity !== undefined;
-}
-
-function normalizeRules(rules: Array<string | PolicyRule> = []): PolicyRule[] {
-  return rules.map((rule) => (typeof rule === "string" ? parseStringRule(rule) : rule));
-}
-
-function parseStringRule(rule: string): PolicyRule {
-  const trimmed = rule.trim();
-  const marker = trimmed.startsWith("@") ? trimmed.indexOf("@", 1) : trimmed.lastIndexOf("@");
-  if (marker > 0) {
-    const pattern = trimmed.slice(0, marker).trim();
-    const versionRange = trimmed.slice(marker + 1).trim();
-    if (pattern && versionRange) return { pattern, versionRange };
-  }
-  return { pattern: trimmed };
-}
-
-function matchesAny(spec: string, name: string, version: string, rules: Array<string | PolicyRule>): boolean {
-  return normalizeRules(rules).some((rule) => {
-    if (rule.pattern.endsWith("/*")) {
-      if (!name.startsWith(rule.pattern.slice(0, -1))) return false;
-    } else if (rule.pattern !== name && rule.pattern !== spec) {
-      return false;
-    }
-    return versionRangeMatches(version, rule.versionRange);
-  });
-}
-
-function versionRangeMatches(version: string, range?: string): boolean {
-  if (!range) return true;
-  const comparators = parseVersionComparators(range.trim());
-  if (!comparators) return range.trim() === version;
-  return comparators.every(({ operator, target }) => versionComparatorMatches(version, operator, target));
-}
-
-function parseVersionComparators(range: string): Array<{ operator: string; target: string }> | undefined {
-  const comparators: Array<{ operator: string; target: string }> = [];
-  let remaining = range;
-  while (remaining.length > 0) {
-    const match = remaining.match(/^(<=|<|>=|>|=)?\s*(\d+(?:\.\d+){0,2})(?:\s+|$)/);
-    if (!match) return undefined;
-    comparators.push({ operator: match[1] ?? "=", target: match[2] ?? "0" });
-    remaining = remaining.slice(match[0].length).trim();
-  }
-  return comparators.length > 0 ? comparators : undefined;
-}
-
-function versionComparatorMatches(version: string, operator: string, target: string): boolean {
-  const comparison = compareVersionsLoose(version, target);
-  if (operator === "<") return comparison < 0;
-  if (operator === "<=") return comparison <= 0;
-  if (operator === ">") return comparison > 0;
-  if (operator === ">=") return comparison >= 0;
-  return comparison === 0;
-}
-
-function compareVersionsLoose(left: string, right: string): number {
-  const leftParts = left.split(".").map((part) => Number.parseInt(part, 10) || 0);
-  const rightParts = right.split(".").map((part) => Number.parseInt(part, 10) || 0);
-  for (let index = 0; index < 3; index += 1) {
-    const delta = (leftParts[index] ?? 0) - (rightParts[index] ?? 0);
-    if (delta !== 0) return delta;
-  }
-  return 0;
+  return evaluateWorkspacePolicy(
+    {
+      packageName: report.request.name,
+      version: report.manifest.version,
+      score: report.score,
+      findings: report.findings
+    },
+    policy
+  );
 }

@@ -7,6 +7,9 @@ export interface InspectOptions {
   apiUrl?: string;
   fixtureDir?: string;
   now?: string;
+  policyFile?: string;
+  workspaceId?: string;
+  sessionToken?: string;
   input: string[];
 }
 
@@ -63,9 +66,11 @@ export function parseInspectOptions(args: string[]): InspectOptions {
     else if (arg === "--api-url") options.apiUrl = requireValue(args, ++index, "--api-url");
     else if (arg === "--fixture-dir") options.fixtureDir = requireValue(args, ++index, "--fixture-dir");
     else if (arg === "--now") options.now = requireValue(args, ++index, "--now");
+    else if (arg === "--policy-file") options.policyFile = requireValue(args, ++index, "--policy-file");
+    else if (arg === "--workspace") options.workspaceId = requireValue(args, ++index, "--workspace");
+    else if (arg === "--session") options.sessionToken = requireValue(args, ++index, "--session");
     else options.input.push(arg);
   }
-
   return options;
 }
 

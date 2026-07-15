@@ -1,0 +1,25 @@
+name: npxray
+
+on:
+  pull_request_target:
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: refs/pull/${{ github.event.pull_request.number }}/merge
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Materialize trusted policy
+        run: git show "${{ github.event.pull_request.base.sha }}:.github/npxray-policy.json" > "$RUNNER_TEMP/npxray-policy.json"
+      - uses: npxray/action@v1
+        with:
+          policy-file: ${{ runner.temp }}/npxray-policy.json
+          comment: ${{ github.event.pull_request.head.repo.fork == false }}
+          github-token: ${{ github.token }}

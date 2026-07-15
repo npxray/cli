@@ -12,8 +12,11 @@ npx @npxray/cli inspect create-vite@latest
 npxray inspect create-vite@latest
 npxray inspect ./package.tgz
 npxray inspect .
+npxray inspect --policy-file policy.json create-vite@latest
+npxray inspect --workspace workspace-team --session "$NPXRAY_SESSION_TOKEN" create-vite@latest
 npxray compare create-vite@5.0.0 create-vite@5.1.0
 npxray run -- create-vite@latest my-app --template react
+npxray run --policy-file policy.json --dry-run -- create-vite@latest
 npxray run -- ./package.tgz
 npxray alias
 npxray watch add create-vite --workspace workspace-team --session "$NPXRAY_SESSION_TOKEN"
@@ -39,6 +42,71 @@ npxray run --help
 npxray alias --help
 npxray watch --help
 ```
+
+Common policy options on `inspect` and `run`:
+
+- `--policy-file <path>` loads a local JSON policy. Local files take precedence over a synced workspace policy.
+- `--workspace <id>` and `--session <token>` sync the workspace policy over the session cookie auth model used by the hosted API.
+- `NPXRAY_WORKSPACE_ID` and `NPXRAY_SESSION_TOKEN` provide the same workspace/session defaults when flags are omitted.
+- `--api-url <url>` / `NPXRAY_API_URL` select the API origin used for scans and policy sync.
+
+## Policy evaluation
+
+`inspect` and `run` evaluate the same workspace policy after the report is printed. Shared precedence is exact (seven stages):
+
+1. matching `deny` rule → block
+2. matching `allow` rule → allow (bypasses signals and budget)
+3. any matching signal rule with `action: "block"`
+4. score at or above `riskBudget` with `enforcement: "block"` → block
+5. any matching signal rule with `action: "warn"`
+6. score at or above `riskBudget` with `enforcement: "warn"` → warn
+7. allow (below budget)
+
+A matching signal block outranks matching signal warnings regardless of signal-rule order. Signal and severity selectors on one rule are conjunctive.
+
+Observable exit contract:
+
+| Code | Meaning |
+| --- | --- |
+| `0` | Allow, help, or warn. Warnings print as `Policy warning: <reason>`. |
+| `1` | Error, including malformed local/synced policy and workspace policy sync failure. |
+| `2` | Aborted run prompt / non-interactive refusal without `--yes`. |
+| `3` | Blocked by policy. Prints `Blocked by policy: <reason>`. |
+
+`run --dry-run` still evaluates policy before returning. A blocked dry-run exits `3` and never starts `npm exec`; a warning dry-run exits `0`, prints the warning, then reports that `npm exec` was not started. Malformed local or synced policy aborts with exit `1` before `npm exec` (and before a successful inspect/run result).
+
+### Policy schema
+
+```json
+{
+  "riskBudget": 50,
+  "enforcement": "block",
+  "allow": [
+    "create-vite",
+    "@npxray/cli@0.1.1",
+    { "pattern": "@my-org/*", "versionRange": ">=1.0.0" }
+  ],
+  "deny": [
+    "left-pad",
+    { "pattern": "event-stream", "versionRange": "<4" }
+  ],
+  "signalRules": [
+    { "signal": "code-shell-exec", "action": "block" },
+    { "severity": "critical", "action": "warn" },
+    { "signal": "code-shell-exec", "severity": "high", "action": "block" }
+  ]
+}
+```
+
+- `riskBudget` is the score at or above which `enforcement` applies (`0`–`100`, required, finite).
+- `enforcement` is required and must be `"warn"` or `"block"`.
+- `allow` / `deny` entries may be strings (`name`, `name@version`, `name/*`, or `name@range`) or objects with `pattern` and optional `versionRange`. Omitted lists load as `[]`; blank or invalid package rules are rejected.
+- `signalRules` is a normalized array (omission loads as `[]`). Each rule must select by finding `signal` id, `severity`, or both (conjunctive) and set `action` to `"warn"` or `"block"`. Selectorless or otherwise malformed signal rules are rejected instead of ignored.
+- Unknown top-level keys are rejected except API metadata `workspaceId` and `updatedAt` (accepted on input, stripped from the normalized policy).
+
+Local files and synced API responses both pass through the shared strict parser. Malformed policy fails closed with exit `1` before command execution.
+
+Session-authenticated workspace policy sync uses `GET /v1/workspaces/<id>/policy` with the `npxray_session` cookie. Sync failures fail closed with exit `1` before any command execution.
 
 ## Alias npx
 

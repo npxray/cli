@@ -6,7 +6,7 @@ import { configureNpxAlias, formatAliasResult, parseAliasOptions } from "./alias
 import { comparePackages, formatCompareResult } from "./compare.js";
 import { formatMarkdown, formatReport } from "./format.js";
 import { parseCompareOptions, parseInspectOptions, parseRunOptions, parseWatchOptions } from "./options.js";
-import { evaluatePolicy, loadPolicy, loadPolicyFromApi } from "./policy.js";
+import { evaluatePolicy, resolvePolicy } from "./policy.js";
 import type { Report } from "./report.js";
 import { inspectWithScanner, resolveApiUrl } from "./scan.js";
 import { buildShareSvg } from "./share.js";
@@ -49,6 +49,9 @@ Options:
   --api-url <url>        Use a specific npxray API origin (default: https://api.npxray.dev)
   --local                Force the local engine instead of the API
   --registry <url>       Scan against a custom registry
+  --policy-file <path>   Load a local JSON policy
+  --workspace <id>       Workspace id for session-based policy sync
+  --session <token>      Session token for session-based policy sync
   --fixture-dir <path>   Load registry/tarball data from fixtures for diagnostics
   --now <timestamp>      Use an injected RFC3339 timestamp for diagnostics
   -h, --help             Show this help
@@ -57,6 +60,8 @@ Environment:
   NPXRAY_API_URL         Default API origin override
   NPXRAY_API_TOKEN       Use the token-authenticated API scan route
   NPXRAY_LOCAL=1         Force local scanning
+  NPXRAY_WORKSPACE_ID    Workspace id for policy sync
+  NPXRAY_SESSION_TOKEN   Session token for policy sync
 
 Local .tgz files and package directories always use the local engine.
 `;
@@ -216,6 +221,21 @@ async function main(argv: string[]): Promise<number> {
     } else {
       output.write(`${formatReport(analysis, { elapsedMs: Date.now() - started })}\n`);
     }
+
+    const policy = await resolvePolicy({
+      policyFile: options.policyFile,
+      baseUrl: resolveApiUrl(options.apiUrl),
+      workspaceId: options.workspaceId ?? env.NPXRAY_WORKSPACE_ID,
+      sessionToken: options.sessionToken ?? env.NPXRAY_SESSION_TOKEN
+    });
+    const decision = evaluatePolicy(analysis, policy);
+    if (decision.action === "block") {
+      output.write(`\nBlocked by policy: ${decision.reason}\n`);
+      return 3;
+    }
+    if (decision.action === "warn") {
+      output.write(`\nPolicy warning: ${decision.reason}\n`);
+    }
     return 0;
   }
 
@@ -279,18 +299,12 @@ async function main(argv: string[]): Promise<number> {
       output.write(`${formatReport(analysis, { elapsedMs: Date.now() - started })}\n`);
     }
 
-    if (options.dryRun) {
-      output.write("\nDry run: npm exec was not started.\n");
-      return 0;
-    }
-
-    const localPolicy = await loadPolicy(options.policyFile);
-    const apiPolicy = await loadPolicyFromApi({
+    const policy = await resolvePolicy({
+      policyFile: options.policyFile,
       baseUrl: resolveApiUrl(options.apiUrl),
       workspaceId: options.workspaceId ?? env.NPXRAY_WORKSPACE_ID,
       sessionToken: options.sessionToken ?? env.NPXRAY_SESSION_TOKEN
     });
-    const policy = localPolicy ?? apiPolicy;
     const decision = evaluatePolicy(analysis, policy);
     if (decision.action === "block") {
       output.write(`\nBlocked by policy: ${decision.reason}\n`);
@@ -298,6 +312,11 @@ async function main(argv: string[]): Promise<number> {
     }
     if (decision.action === "warn") {
       output.write(`\nPolicy warning: ${decision.reason}\n`);
+    }
+
+    if (options.dryRun) {
+      output.write("\nDry run: npm exec was not started.\n");
+      return 0;
     }
 
     if (!options.yes) {

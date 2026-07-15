@@ -22,7 +22,40 @@ describe("CLI option parsing", () => {
       apiUrl: "https://api.test",
       fixtureDir: undefined,
       now: undefined,
+      policyFile: undefined,
+      workspaceId: undefined,
+      sessionToken: undefined,
       input: ["create-vite@latest"]
+    });
+  });
+
+  it("parses inspect local and synced policy inputs", () => {
+    expect(
+      parseInspectOptions([
+        "--policy-file",
+        "policy.json",
+        "--workspace",
+        "workspace-team",
+        "--session",
+        "session-token",
+        "--api-url",
+        "https://api.test",
+        "--local",
+        "fixture-entrypoint@latest"
+      ])
+    ).toEqual({
+      json: false,
+      markdown: false,
+      svg: false,
+      local: true,
+      registryUrl: undefined,
+      apiUrl: "https://api.test",
+      fixtureDir: undefined,
+      now: undefined,
+      policyFile: "policy.json",
+      workspaceId: "workspace-team",
+      sessionToken: "session-token",
+      input: ["fixture-entrypoint@latest"]
     });
   });
 

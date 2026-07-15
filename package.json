@@ -1,6 +1,6 @@
 {
   "name": "@npxray/cli",
-  "version": "0.4.1",
+  "version": "0.4.2",
   "description": "X-ray vision for npx: a deterministic npm package risk profiler and guarded runner.",
   "license": "Apache-2.0",
   "type": "module",
@@ -53,7 +53,7 @@
     "dev": "tsx src/index.ts"
   },
   "dependencies": {
-    "@npxray/contracts": "^0.4.4"
+    "@npxray/contracts": "^0.4.5"
   },
   "optionalDependencies": {
     "@npxray/engine-bin-darwin-amd64": "0.4.1",
